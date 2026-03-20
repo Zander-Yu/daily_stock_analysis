@@ -53,7 +53,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     if: >
-      github.event.schedule == '0 10 * * 1-5' ||
+      github.event.schedule == '30 7 * * 1-5' ||
       github.event.inputs.mode == 'full' ||
       github.event.inputs.mode == 'batch1' ||
       github.event.inputs.mode == 'stocks-only' ||
@@ -183,7 +183,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     if: >
-      github.event.schedule == '15 10 * * 1-5' ||
+      github.event.schedule == '45 7 * * 1-5' ||
       github.event.inputs.mode == 'full' ||
       github.event.inputs.mode == 'batch2' ||
       github.event.inputs.mode == 'stocks-only'
@@ -306,7 +306,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     if: >
-      github.event.schedule == '30 10 * * 1-5' ||
+      github.event.schedule == '0 8 * * 1-5' ||
       github.event.inputs.mode == 'full' ||
       github.event.inputs.mode == 'batch3' ||
       github.event.inputs.mode == 'stocks-only'
