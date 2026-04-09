@@ -1,7 +1,8 @@
 """
-每周股票池轮动扫描器 v2
+每周股票池轮动扫描器 v3
 行业板块 + 概念板块双扫描
 综合评分选股 + 动态名额分配
+固定仓11只 + 轮动仓18只
 """
 
 import akshare as ak
@@ -19,8 +20,8 @@ MIN_DAILY_AMOUNT = 3e8       # 日均成交额 >= 3亿
 PRICE_MIN = 5                # 股价下限
 PRICE_MAX = 150              # 股价上限
 MIN_MARKET_CAP = 50e8        # 最小市值 50亿
-MAX_REPLACE = 10             # 每周最多替换数量
-TOP_SECTORS = 10             # 扫描最强板块数量（行业+概念合并后取前10）
+MAX_REPLACE = 18             # 轮动仓最大数量
+TOP_SECTORS = 12             # 扫描最强板块数量（行业+概念合并后取前12）
 
 # 综合评分权重
 WEIGHT_CHANGE = 0.4          # 涨幅权重
@@ -31,27 +32,19 @@ WEIGHT_TURNOVER = 0.25       # 换手率权重
 EXCLUDE_PREFIX = ['688', '8']
 EXCLUDE_KEYWORDS = ['ST', '*ST']
 
-# 固定仓（不参与轮动的核心票）
+# 固定仓（11只，不参与轮动）
 FIXED_POOL = [
-    '300308',  # 中际旭创 - 光模块龙头
-    '300502',  # 新易盛 - 光模块
+    '300308',  # 中际旭创 - 算力/光模块龙头
     '600406',  # 国电南瑞 - 电网龙头
+    '002179',  # 中航光电 - 军工连接器龙头
     '002230',  # 科大讯飞 - AI应用龙头
-    '002049',  # 紫光国微 - 军工芯片
-    '601727',  # 上海电气 - 电力/核聚变
-    '600875',  # 东方电气 - 风电/核聚变
-    '002179',  # 中航光电 - 军工连接器
-    '600900',  # 长江电力 - 电力压舱石
-    '002371',  # 北方华创 - 半导体设备
-    '600309',  # 万华化学 - 化工龙头
-    '002202',  # 金风科技 - 风电龙头
-    '601698',  # 中国卫通 - 商业航天
-    '002281',  # 光迅科技 - 光模块/5G
-    '600498',  # 烽火通信 - 5G/6G
-    '601985',  # 中国核电 - 核电龙头
-    '603986',  # 兆易创新 - 存储芯片
-    '002261',  # 拓维信息 - 算力
-    '601868',  # 中国能建 - 央国企/电网
+    '600875',  # 东方电气 - 风电/核聚变龙头
+    '603986',  # 兆易创新 - 存储芯片龙头
+    '002371',  # 北方华创 - 半导体设备龙头
+    '600498',  # 烽火通信 - 5G/6G龙头
+    '600118',  # 中国卫星 - 商业航天龙头
+    '603123',  # 翠微股份 - 互联网金融
+    '601211',  # 国泰君安 - 券商/大盘金融
 ]
 
 def log(msg):
@@ -110,12 +103,13 @@ def get_sector_rankings():
     log(f"\n  🏆 综合排名前 {len(top_sectors)} 个板块:")
     for i, s in enumerate(top_sectors, 1):
         tag = "🏭" if s['type'] == '行业' else "💡"
-        log(f"    {i}. {tag} {s['name']}({s['type']}): {s['change_pct']:+.2f}% | 领涨: {s['leader']}")
+        quota = get_quota(i, len(top_sectors))
+        log(f"    {i}. {tag} {s['name']}({s['type']}): {s['change_pct']:+.2f}% | 领涨: {s['leader']} | 名额: {quota}只")
     
     return top_sectors
 
 def get_quota(rank, total):
-    """根据板块排名动态分配名额：前3给3只，中间给2只，后面给1只"""
+    """根据板块排名动态分配名额：前3给3只，4-6给2只，7-12给1只"""
     if rank <= 3:
         return 3
     elif rank <= 6:
@@ -177,12 +171,10 @@ def filter_stock(code, name, price, amount, market_cap):
 def compute_score(change_pct, amount, turnover):
     """
     综合评分：涨幅 40% + 成交额 35% + 换手率 25%
-    各指标先做归一化（在板块内排名百分位），再加权求和
-    这里用原始值，在板块内排序时自然形成相对排名
     """
     score = 0
     score += float(change_pct) * WEIGHT_CHANGE
-    score += float(amount) / 1e8 * WEIGHT_AMOUNT   # 成交额转为亿，量纲统一
+    score += float(amount) / 1e8 * WEIGHT_AMOUNT
     score += float(turnover) * WEIGHT_TURNOVER
     return round(score, 2)
 
@@ -255,8 +247,9 @@ def generate_report(candidates, top_sectors):
     """生成推送报告"""
     now = datetime.now().strftime('%Y-%m-%d %H:%M')
     
-    report = f"# 📡 每周股票池轮动扫描 v2\n"
-    report += f"**扫描时间**: {now}\n\n"
+    report = f"# 📡 每周股票池轮动扫描 v3\n"
+    report += f"**扫描时间**: {now}\n"
+    report += f"**固定仓**: {len(FIXED_POOL)}只 | **轮动仓上限**: {MAX_REPLACE}只\n\n"
     
     # 板块概览
     report += "## 🔥 本周最强板块（行业+概念综合排名）\n"
@@ -264,7 +257,7 @@ def generate_report(candidates, top_sectors):
         tag = "🏭" if s['type'] == '行业' else "💡"
         quota = get_quota(i, len(top_sectors))
         medal = ["🥇","🥈","🥉"][i-1] if i <= 3 else f"{i}."
-        report += f"{medal} {tag} **{s['name']}**({s['type']}) {s['change_pct']:+.2f}% → 分配{quota}只名额\n"
+        report += f"{medal} {tag} **{s['name']}**({s['type']}) {s['change_pct']:+.2f}% → {quota}只名额\n"
     report += "\n"
     
     # 候选股票
@@ -282,23 +275,40 @@ def generate_report(candidates, top_sectors):
         report += f"- `{c['code']}` **{c['name']}** | ⭐{c['score']:.1f}分 | 💰{c['price']:.2f}元 | 📈{c['change_pct']:+.2f}% | 成交{c['amount']/1e8:.1f}亿 | 换手{c['turnover']:.1f}% | 市值{cap_str}\n"
     
     report += f"\n---\n"
-    report += f"**共筛选出 {len(candidates)} 只候选** | 最多替换 {MAX_REPLACE} 只\n"
+    report += f"**共筛选出 {len(candidates)} 只候选** | 轮动仓取前 {MAX_REPLACE} 只\n"
     report += f"筛选条件: 成交额≥3亿 | 股价{PRICE_MIN}-{PRICE_MAX}元 | 市值≥50亿 | 排除ST/科创板/北交所\n"
-    report += f"名额分配: 排名1-3板块各3只 | 排名4-6各2只 | 排名7-10各1只\n\n"
+    report += f"名额分配: 排名1-3板块各3只 | 排名4-6各2只 | 排名7-12各1只\n\n"
     
-    # 候选代码汇总
+    # 代码汇总
     if candidates:
-        codes = [c['code'] for c in candidates[:MAX_REPLACE]]
-        report += f"**轮动仓候选代码（可直接复制）**:\n"
-        report += f"`{','.join(codes)}`\n\n"
+        rotation_codes = [c['code'] for c in candidates[:MAX_REPLACE]]
+        report += f"## 📋 代码汇总（可直接复制）\n\n"
         
-        report += f"**固定仓代码（{len(FIXED_POOL)}只，不动）**:\n"
+        report += f"**轮动仓（{len(rotation_codes)}只）**:\n"
+        report += f"`{','.join(rotation_codes)}`\n\n"
+        
+        report += f"**固定仓（{len(FIXED_POOL)}只）**:\n"
         report += f"`{','.join(FIXED_POOL)}`\n\n"
         
-        # 合并后的完整代码
-        all_codes = FIXED_POOL + codes
-        report += f"**合并后完整股票池（{len(all_codes)}只）**:\n"
-        report += f"`{','.join(all_codes)}`\n"
+        # 合并完整池
+        all_codes = FIXED_POOL + rotation_codes
+        report += f"**完整股票池（{len(all_codes)}只，可直接替换到 daily_analysis.yml）**:\n"
+        report += f"`{','.join(all_codes)}`\n\n"
+        
+        # 三批分配建议
+        batch_size = len(all_codes) // 3
+        remainder = len(all_codes) % 3
+        b1_end = batch_size + (1 if remainder > 0 else 0)
+        b2_end = b1_end + batch_size + (1 if remainder > 1 else 0)
+        
+        batch1 = all_codes[:b1_end]
+        batch2 = all_codes[b1_end:b2_end]
+        batch3 = all_codes[b2_end:]
+        
+        report += f"**三批分配建议**:\n"
+        report += f"- 第一批（{len(batch1)}只）: `{','.join(batch1)}`\n"
+        report += f"- 第二批（{len(batch2)}只）: `{','.join(batch2)}`\n"
+        report += f"- 第三批（{len(batch3)}只）: `{','.join(batch3)}`\n"
     
     report += f"\n> ⚠️ 以上为自动筛选结果，仅供参考。建议对比自身判断后决定是否替换。"
     
@@ -333,12 +343,12 @@ def push_to_pushplus(report):
 
 def main():
     log("=" * 50)
-    log("📡 每周股票池轮动扫描器 v2 启动")
+    log("📡 每周股票池轮动扫描器 v3 启动")
     log("=" * 50)
-    log(f"参数: 成交额≥{MIN_DAILY_AMOUNT/1e8:.0f}亿 | 股价{PRICE_MIN}-{PRICE_MAX}元 | 市值≥{MIN_MARKET_CAP/1e8:.0f}亿")
+    log(f"固定仓: {len(FIXED_POOL)} 只 | 轮动仓上限: {MAX_REPLACE} 只 | 总容量: {len(FIXED_POOL) + MAX_REPLACE} 只")
+    log(f"扫描板块数: {TOP_SECTORS} | 参数: 成交额≥{MIN_DAILY_AMOUNT/1e8:.0f}亿 | 股价{PRICE_MIN}-{PRICE_MAX}元 | 市值≥{MIN_MARKET_CAP/1e8:.0f}亿")
     log(f"评分权重: 涨幅{WEIGHT_CHANGE*100:.0f}% + 成交额{WEIGHT_AMOUNT*100:.0f}% + 换手率{WEIGHT_TURNOVER*100:.0f}%")
-    log(f"固定仓: {len(FIXED_POOL)} 只 | 最多替换: {MAX_REPLACE} 只")
-    log(f"名额规则: TOP1-3→3只 | TOP4-6→2只 | TOP7-10→1只")
+    log(f"名额规则: TOP1-3→3只 | TOP4-6→2只 | TOP7-12→1只")
     log("")
     
     # 第一步：获取强势板块（行业+概念）
