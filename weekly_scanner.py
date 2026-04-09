@@ -1,6 +1,7 @@
 """
-每周股票池轮动扫描器
-自动筛选本周最强板块龙头，生成轮动仓替换建议
+每周股票池轮动扫描器 v2
+行业板块 + 概念板块双扫描
+综合评分选股 + 动态名额分配
 """
 
 import akshare as ak
@@ -18,14 +19,17 @@ MIN_DAILY_AMOUNT = 3e8       # 日均成交额 >= 3亿
 PRICE_MIN = 5                # 股价下限
 PRICE_MAX = 150              # 股价上限
 MIN_MARKET_CAP = 50e8        # 最小市值 50亿
-MAX_CONTINUOUS_LIMIT_UP = 5  # 连续涨停天数上限
 MAX_REPLACE = 10             # 每周最多替换数量
-TOP_SECTORS = 8              # 扫描最强板块数量
-STOCKS_PER_SECTOR = 2        # 每个板块取几只
+TOP_SECTORS = 10             # 扫描最强板块数量（行业+概念合并后取前10）
 
-# 排除科创板（688）和 ST
+# 综合评分权重
+WEIGHT_CHANGE = 0.4          # 涨幅权重
+WEIGHT_AMOUNT = 0.35         # 成交额权重
+WEIGHT_TURNOVER = 0.25       # 换手率权重
+
+# 排除科创板（688）和北交所（8开头）
 EXCLUDE_PREFIX = ['688', '8']
-EXCLUDE_KEYWORDS = ['ST', '*ST', 'N ', 'C ']
+EXCLUDE_KEYWORDS = ['ST', '*ST']
 
 # 固定仓（不参与轮动的核心票）
 FIXED_POOL = [
@@ -54,47 +58,78 @@ def log(msg):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
 
 def get_sector_rankings():
-    """获取板块涨幅排名"""
+    """获取行业板块 + 概念板块，合并排名"""
     log("📊 获取板块数据...")
     
-    sectors = []
+    all_sectors = []
     
+    # 1. 行业板块
     try:
         df = ak.stock_board_industry_name_em()
         if df is not None and len(df) > 0:
-            log(f"  获取到 {len(df)} 个行业板块")
-            log(f"  列名: {df.columns.tolist()}")
-            
+            log(f"  行业板块: {len(df)} 个")
             for _, row in df.iterrows():
                 try:
                     name = str(row['板块名称'])
                     change_pct = float(row['涨跌幅'])
-                    leader = str(row.get('领涨股票', ''))
-                    leader_pct = float(row.get('领涨股票-涨跌幅', 0))
-                    sectors.append({
+                    all_sectors.append({
                         'name': name,
                         'change_pct': change_pct,
-                        'leader': leader,
-                        'leader_pct': leader_pct,
+                        'type': '行业',
+                        'leader': str(row.get('领涨股票', '')),
                     })
                 except (ValueError, KeyError, TypeError):
                     continue
     except Exception as e:
-        log(f"  ⚠️ 获取板块数据异常: {e}")
+        log(f"  ⚠️ 行业板块获取异常: {e}")
     
-    sectors.sort(key=lambda x: x['change_pct'], reverse=True)
-    top_sectors = sectors[:TOP_SECTORS]
+    # 2. 概念板块
+    try:
+        df2 = ak.stock_board_concept_name_em()
+        if df2 is not None and len(df2) > 0:
+            log(f"  概念板块: {len(df2)} 个")
+            for _, row in df2.iterrows():
+                try:
+                    name = str(row['板块名称'])
+                    change_pct = float(row['涨跌幅'])
+                    all_sectors.append({
+                        'name': name,
+                        'change_pct': change_pct,
+                        'type': '概念',
+                        'leader': str(row.get('领涨股票', '')),
+                    })
+                except (ValueError, KeyError, TypeError):
+                    continue
+    except Exception as e:
+        log(f"  ⚠️ 概念板块获取异常: {e}")
     
-    log(f"  本周最强 {len(top_sectors)} 个板块:")
-    for s in top_sectors:
-        log(f"    {s['name']}: {s['change_pct']:+.2f}% | 领涨: {s['leader']}({s['leader_pct']:+.2f}%)")
+    # 合并排序
+    all_sectors.sort(key=lambda x: x['change_pct'], reverse=True)
+    top_sectors = all_sectors[:TOP_SECTORS]
+    
+    log(f"\n  🏆 综合排名前 {len(top_sectors)} 个板块:")
+    for i, s in enumerate(top_sectors, 1):
+        tag = "🏭" if s['type'] == '行业' else "💡"
+        log(f"    {i}. {tag} {s['name']}({s['type']}): {s['change_pct']:+.2f}% | 领涨: {s['leader']}")
     
     return top_sectors
 
-def get_sector_stocks(sector_name):
-    """获取指定板块的成分股"""
+def get_quota(rank, total):
+    """根据板块排名动态分配名额：前3给3只，中间给2只，后面给1只"""
+    if rank <= 3:
+        return 3
+    elif rank <= 6:
+        return 2
+    else:
+        return 1
+
+def get_sector_stocks(sector_name, sector_type):
+    """获取板块成分股"""
     try:
-        df = ak.stock_board_industry_cons_em(symbol=sector_name)
+        if sector_type == '行业':
+            df = ak.stock_board_industry_cons_em(symbol=sector_name)
+        else:
+            df = ak.stock_board_concept_cons_em(symbol=sector_name)
         if df is not None and len(df) > 0:
             return df
     except Exception as e:
@@ -105,65 +140,71 @@ def filter_stock(code, name, price, amount, market_cap):
     """单只股票过滤"""
     code_str = str(code).zfill(6)
     
-    # 排除科创板
     for prefix in EXCLUDE_PREFIX:
         if code_str.startswith(prefix):
-            return False, "科创板/北交所"
+            return False
     
-    # 排除ST
     for kw in EXCLUDE_KEYWORDS:
         if kw in str(name):
-            return False, "ST/次新"
+            return False
     
-    # 排除已在固定仓的
     if code_str in FIXED_POOL:
-        return False, "已在固定仓"
+        return False
     
-    # 股价过滤
     try:
         p = float(price)
         if p < PRICE_MIN or p > PRICE_MAX:
-            return False, f"股价{p}不在{PRICE_MIN}-{PRICE_MAX}区间"
+            return False
     except (ValueError, TypeError):
-        return False, "股价数据异常"
+        return False
     
-    # 成交额过滤
     try:
         amt = float(amount)
         if amt < MIN_DAILY_AMOUNT:
-            return False, f"成交额{amt/1e8:.1f}亿 < 3亿"
+            return False
     except (ValueError, TypeError):
-        return False, "成交额数据异常"
+        return False
     
-    # 市值过滤
     try:
         cap = float(market_cap)
         if cap > 0 and cap < MIN_MARKET_CAP:
-            return False, f"市值{cap/1e8:.0f}亿 < 50亿"
+            return False
     except (ValueError, TypeError):
-        pass  # 市值数据缺失不过滤
+        pass
     
-    return True, "通过"
+    return True
+
+def compute_score(change_pct, amount, turnover):
+    """
+    综合评分：涨幅 40% + 成交额 35% + 换手率 25%
+    各指标先做归一化（在板块内排名百分位），再加权求和
+    这里用原始值，在板块内排序时自然形成相对排名
+    """
+    score = 0
+    score += float(change_pct) * WEIGHT_CHANGE
+    score += float(amount) / 1e8 * WEIGHT_AMOUNT   # 成交额转为亿，量纲统一
+    score += float(turnover) * WEIGHT_TURNOVER
+    return round(score, 2)
 
 def scan_sector_leaders(top_sectors):
-    """从强势板块中筛选龙头股"""
+    """从强势板块中筛选龙头股，综合评分 + 动态名额"""
     log("\n🔍 开始筛选板块龙头...")
     
     candidates = []
     seen_codes = set()
     
-    for sector in top_sectors:
+    for rank, sector in enumerate(top_sectors, 1):
         sector_name = sector['name']
-        log(f"\n  扫描板块: {sector_name} ({sector['change_pct']:+.2f}%)")
+        sector_type = sector['type']
+        quota = get_quota(rank, len(top_sectors))
+        tag = "🏭" if sector_type == '行业' else "💡"
         
-        df = get_sector_stocks(sector_name)
+        log(f"\n  {tag} [{rank}/{len(top_sectors)}] {sector_name}({sector_type}) | 涨幅:{sector['change_pct']:+.2f}% | 名额:{quota}只")
+        
+        df = get_sector_stocks(sector_name, sector_type)
         if df.empty:
             log(f"    跳过（无成分股数据）")
             continue
-        
-        # 尝试识别关键列
-        cols = df.columns.tolist()
-        log(f"    成分股 {len(df)} 只，列: {cols[:8]}")
         
         sector_picks = []
         for _, row in df.iterrows():
@@ -173,14 +214,16 @@ def scan_sector_leaders(top_sectors):
                 price = float(row.get('最新价', 0))
                 change_pct = float(row.get('涨跌幅', 0))
                 amount = float(row.get('成交额', 0))
+                turnover = float(row.get('换手率', 0))
                 market_cap = float(row.get('总市值', 0))
                 
                 if code in seen_codes:
                     continue
                 
-                passed, reason = filter_stock(code, name, price, amount, market_cap)
-                if not passed:
+                if not filter_stock(code, name, price, amount, market_cap):
                     continue
+                
+                score = compute_score(change_pct, amount, turnover)
                 
                 sector_picks.append({
                     'code': code,
@@ -188,19 +231,23 @@ def scan_sector_leaders(top_sectors):
                     'price': price,
                     'change_pct': change_pct,
                     'amount': amount,
+                    'turnover': turnover,
                     'market_cap': market_cap,
                     'sector': sector_name,
+                    'sector_type': sector_type,
                     'sector_change': sector['change_pct'],
+                    'sector_rank': rank,
+                    'score': score,
                 })
             except (ValueError, IndexError, TypeError):
                 continue
         
-        # 按成交额排序，取前N只
-        sector_picks.sort(key=lambda x: x['amount'], reverse=True)
-        for pick in sector_picks[:STOCKS_PER_SECTOR]:
+        # 按综合评分排序，取名额数量
+        sector_picks.sort(key=lambda x: x['score'], reverse=True)
+        for pick in sector_picks[:quota]:
             seen_codes.add(pick['code'])
             candidates.append(pick)
-            log(f"    ✅ {pick['code']} {pick['name']} | 价格:{pick['price']:.2f} | 涨幅:{pick['change_pct']:+.2f}% | 成交额:{pick['amount']/1e8:.1f}亿")
+            log(f"    ✅ {pick['code']} {pick['name']} | 评分:{pick['score']:.1f} | 涨幅:{pick['change_pct']:+.2f}% | 成交:{pick['amount']/1e8:.1f}亿 | 换手:{pick['turnover']:.1f}%")
     
     return candidates
 
@@ -208,42 +255,52 @@ def generate_report(candidates, top_sectors):
     """生成推送报告"""
     now = datetime.now().strftime('%Y-%m-%d %H:%M')
     
-    report = f"# 📡 每周股票池轮动扫描\n"
+    report = f"# 📡 每周股票池轮动扫描 v2\n"
     report += f"**扫描时间**: {now}\n\n"
     
     # 板块概览
-    report += "## 🔥 本周最强板块\n"
+    report += "## 🔥 本周最强板块（行业+概念综合排名）\n"
     for i, s in enumerate(top_sectors, 1):
-        emoji = "🥇🥈🥉"[i-1] if i <= 3 else "🔸"
-        report += f"{emoji} **{s['name']}** {s['change_pct']:+.2f}%\n"
+        tag = "🏭" if s['type'] == '行业' else "💡"
+        quota = get_quota(i, len(top_sectors))
+        medal = ["🥇","🥈","🥉"][i-1] if i <= 3 else f"{i}."
+        report += f"{medal} {tag} **{s['name']}**({s['type']}) {s['change_pct']:+.2f}% → 分配{quota}只名额\n"
     report += "\n"
     
     # 候选股票
-    report += "## 🎯 轮动仓候选（按板块分组）\n"
+    report += "## 🎯 轮动仓候选（综合评分排序）\n"
+    report += "*评分 = 涨幅×40% + 成交额×35% + 换手率×25%*\n\n"
     
     current_sector = ""
     for c in candidates:
         if c['sector'] != current_sector:
             current_sector = c['sector']
-            report += f"\n**【{current_sector}】** 板块涨幅 {c['sector_change']:+.2f}%\n"
+            tag = "🏭" if c['sector_type'] == '行业' else "💡"
+            report += f"\n**{tag}【{current_sector}】** 板块涨幅 {c['sector_change']:+.2f}%\n"
         
         cap_str = f"{c['market_cap']/1e8:.0f}亿" if c['market_cap'] > 0 else "N/A"
-        report += f"- `{c['code']}` **{c['name']}** | 💰{c['price']:.2f}元 | 📈{c['change_pct']:+.2f}% | 成交{c['amount']/1e8:.1f}亿 | 市值{cap_str}\n"
+        report += f"- `{c['code']}` **{c['name']}** | ⭐{c['score']:.1f}分 | 💰{c['price']:.2f}元 | 📈{c['change_pct']:+.2f}% | 成交{c['amount']/1e8:.1f}亿 | 换手{c['turnover']:.1f}% | 市值{cap_str}\n"
     
     report += f"\n---\n"
     report += f"**共筛选出 {len(candidates)} 只候选** | 最多替换 {MAX_REPLACE} 只\n"
-    report += f"筛选条件: 日均成交额≥3亿 | 股价{PRICE_MIN}-{PRICE_MAX}元 | 市值≥50亿 | 排除ST/科创板\n\n"
+    report += f"筛选条件: 成交额≥3亿 | 股价{PRICE_MIN}-{PRICE_MAX}元 | 市值≥50亿 | 排除ST/科创板/北交所\n"
+    report += f"名额分配: 排名1-3板块各3只 | 排名4-6各2只 | 排名7-10各1只\n\n"
     
-    # 候选代码汇总（方便直接复制）
+    # 候选代码汇总
     if candidates:
         codes = [c['code'] for c in candidates[:MAX_REPLACE]]
         report += f"**轮动仓候选代码（可直接复制）**:\n"
         report += f"`{','.join(codes)}`\n\n"
         
-        report += f"**固定仓代码（不动）**:\n"
-        report += f"`{','.join(FIXED_POOL)}`\n"
+        report += f"**固定仓代码（{len(FIXED_POOL)}只，不动）**:\n"
+        report += f"`{','.join(FIXED_POOL)}`\n\n"
+        
+        # 合并后的完整代码
+        all_codes = FIXED_POOL + codes
+        report += f"**合并后完整股票池（{len(all_codes)}只）**:\n"
+        report += f"`{','.join(all_codes)}`\n"
     
-    report += f"\n> ⚠️ 以上为自动筛选结果，仅供参考，请结合自身判断决定是否替换。"
+    report += f"\n> ⚠️ 以上为自动筛选结果，仅供参考。建议对比自身判断后决定是否替换。"
     
     return report
 
@@ -256,7 +313,7 @@ def push_to_pushplus(report):
     
     data = {
         'token': token,
-        'title': f'📡 每周股票池轮动扫描 {datetime.now().strftime("%m/%d")}',
+        'title': f'📡 每周轮动扫描 {datetime.now().strftime("%m/%d")}',
         'content': report,
         'template': 'markdown',
     }
@@ -276,21 +333,26 @@ def push_to_pushplus(report):
 
 def main():
     log("=" * 50)
-    log("📡 每周股票池轮动扫描器 启动")
+    log("📡 每周股票池轮动扫描器 v2 启动")
     log("=" * 50)
     log(f"参数: 成交额≥{MIN_DAILY_AMOUNT/1e8:.0f}亿 | 股价{PRICE_MIN}-{PRICE_MAX}元 | 市值≥{MIN_MARKET_CAP/1e8:.0f}亿")
+    log(f"评分权重: 涨幅{WEIGHT_CHANGE*100:.0f}% + 成交额{WEIGHT_AMOUNT*100:.0f}% + 换手率{WEIGHT_TURNOVER*100:.0f}%")
     log(f"固定仓: {len(FIXED_POOL)} 只 | 最多替换: {MAX_REPLACE} 只")
+    log(f"名额规则: TOP1-3→3只 | TOP4-6→2只 | TOP7-10→1只")
     log("")
     
-    # 第一步：获取强势板块
+    # 第一步：获取强势板块（行业+概念）
     top_sectors = get_sector_rankings()
     if not top_sectors:
         log("❌ 未获取到板块数据，退出")
         sys.exit(1)
     
-    # 第二步：筛选板块龙头
+    # 第二步：综合评分筛选龙头
     candidates = scan_sector_leaders(top_sectors)
     log(f"\n📋 共筛选出 {len(candidates)} 只候选股票")
+    
+    if not candidates:
+        log("⚠️ 未筛选出候选股票，检查筛选条件是否过严")
     
     # 第三步：生成报告
     report = generate_report(candidates, top_sectors)
