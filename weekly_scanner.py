@@ -67,6 +67,8 @@ def get_sector_rankings():
             cols = df_sector.columns.tolist()
             df_sector.columns = [str(c).strip() for c in cols]
             log(f"  获取到 {len(df_sector)} 个行业板块")
+            log(f"  列名: {df_sector.columns.tolist()}")
+            log(f"  前3行: {df_sector.head(3).to_string()}")
             
             # 提取板块名称和涨幅
             for _, row in df_sector.head(TOP_SECTORS * 2).iterrows():
