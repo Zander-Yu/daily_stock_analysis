@@ -1,0 +1,45 @@
+name: 每周股票池扫描
+
+on:
+  # 每周五北京时间 17:00 自动运行（UTC 09:00）
+  schedule:
+    - cron: '0 9 * * 5'
+  
+  # 手动触发
+  workflow_dispatch:
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+      
+      - name: 设置 Python 环境
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      
+      - name: 安装依赖
+        run: |
+          pip install --upgrade pip
+          pip install akshare pandas requests
+      
+      - name: 执行扫描
+        env:
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+        run: |
+          echo "🚀 每周股票池轮动扫描"
+          echo "⏰ $(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')"
+          python weekly_scanner.py
+      
+      - name: 上传扫描报告
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: weekly-scan-${{ github.run_number }}
+          path: reports/
+          retention-days: 90
