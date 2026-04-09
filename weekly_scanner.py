@@ -54,43 +54,40 @@ def log(msg):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
 
 def get_sector_rankings():
-    """获取板块涨幅排名和资金流向"""
+    """获取板块涨幅排名"""
     log("📊 获取板块数据...")
     
     sectors = []
     
     try:
-        # 行业板块涨幅排名
-        df_sector = ak.stock_board_industry_name_em()
-        if df_sector is not None and len(df_sector) > 0:
-            # 标准化列名
-            cols = df_sector.columns.tolist()
-            df_sector.columns = [str(c).strip() for c in cols]
-            log(f"  获取到 {len(df_sector)} 个行业板块")
-            log(f"  列名: {df_sector.columns.tolist()}")
-            log(f"  前3行: {df_sector.head(3).to_string()}")
+        df = ak.stock_board_industry_name_em()
+        if df is not None and len(df) > 0:
+            log(f"  获取到 {len(df)} 个行业板块")
+            log(f"  列名: {df.columns.tolist()}")
             
-            # 提取板块名称和涨幅
-            for _, row in df_sector.head(TOP_SECTORS * 2).iterrows():
+            for _, row in df.iterrows():
                 try:
-                    name = str(row.iloc[1]) if len(row) > 1 else str(row.iloc[0])
-                    change_pct = float(row.iloc[2]) if len(row) > 2 else 0
+                    name = str(row['板块名称'])
+                    change_pct = float(row['涨跌幅'])
+                    leader = str(row.get('领涨股票', ''))
+                    leader_pct = float(row.get('领涨股票-涨跌幅', 0))
                     sectors.append({
                         'name': name,
                         'change_pct': change_pct,
+                        'leader': leader,
+                        'leader_pct': leader_pct,
                     })
-                except (ValueError, IndexError):
+                except (ValueError, KeyError, TypeError):
                     continue
     except Exception as e:
         log(f"  ⚠️ 获取板块数据异常: {e}")
     
-    # 按涨幅排序取前N个
     sectors.sort(key=lambda x: x['change_pct'], reverse=True)
     top_sectors = sectors[:TOP_SECTORS]
     
     log(f"  本周最强 {len(top_sectors)} 个板块:")
     for s in top_sectors:
-        log(f"    {s['name']}: {s['change_pct']:+.2f}%")
+        log(f"    {s['name']}: {s['change_pct']:+.2f}% | 领涨: {s['leader']}({s['leader_pct']:+.2f}%)")
     
     return top_sectors
 
@@ -171,12 +168,12 @@ def scan_sector_leaders(top_sectors):
         sector_picks = []
         for _, row in df.iterrows():
             try:
-                code = str(row.iloc[1]).zfill(6) if len(row) > 1 else str(row.iloc[0]).zfill(6)
-                name = str(row.iloc[2]) if len(row) > 2 else "未知"
-                price = float(row.iloc[3]) if len(row) > 3 else 0
-                change_pct = float(row.iloc[4]) if len(row) > 4 else 0
-                amount = float(row.iloc[5]) if len(row) > 5 else 0
-                market_cap = float(row.iloc[8]) if len(row) > 8 else 0
+                code = str(row.get('代码', row.iloc[1])).zfill(6)
+                name = str(row.get('名称', row.iloc[2]))
+                price = float(row.get('最新价', 0))
+                change_pct = float(row.get('涨跌幅', 0))
+                amount = float(row.get('成交额', 0))
+                market_cap = float(row.get('总市值', 0))
                 
                 if code in seen_codes:
                     continue
