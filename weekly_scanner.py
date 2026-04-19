@@ -96,6 +96,10 @@ def get_sector_rankings():
     except Exception as e:
         log(f"  ⚠️ 概念板块获取异常: {e}")
     
+# 排除投机性概念板块
+    EXCLUDE_SECTOR_KEYWORDS = ['连板', '打板', '涨停', '首板', '二板', '三板', '跌停', '摘帽', '复牌', '破板', '炸板']
+    all_sectors = [s for s in all_sectors if not any(kw in s['name'] for kw in EXCLUDE_SECTOR_KEYWORDS)]
+    
     # 合并排序
     all_sectors.sort(key=lambda x: x['change_pct'], reverse=True)
     top_sectors = all_sectors[:TOP_SECTORS]
