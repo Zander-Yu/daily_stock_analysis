@@ -11,6 +11,7 @@ import requests
 import json
 import os
 import sys
+import time
 from datetime import datetime
 
 # ==========================================
@@ -50,6 +51,18 @@ FIXED_POOL = [
 def log(msg):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
 
+def retry_call(func, max_retries=3, delay=5):
+    """带重试的函数调用"""
+    for i in range(max_retries):
+        try:
+            return func()
+        except Exception as e:
+            if i < max_retries - 1:
+                log(f"  ⚠️ 第{i+1}次请求失败，{delay}秒后重试: {e}")
+                time.sleep(delay)
+            else:
+                raise e
+
 def get_sector_rankings():
     """获取行业板块 + 概念板块，合并排名"""
     log("📊 获取板块数据...")
@@ -58,7 +71,7 @@ def get_sector_rankings():
     
     # 1. 行业板块
     try:
-        df = ak.stock_board_industry_name_em()
+        df = retry_call(lambda: ak.stock_board_industry_name_em())
         if df is not None and len(df) > 0:
             log(f"  行业板块: {len(df)} 个")
             for _, row in df.iterrows():
@@ -78,7 +91,7 @@ def get_sector_rankings():
     
     # 2. 概念板块
     try:
-        df2 = ak.stock_board_concept_name_em()
+        df2 = retry_call(lambda: ak.stock_board_concept_name_em())
         if df2 is not None and len(df2) > 0:
             log(f"  概念板块: {len(df2)} 个")
             for _, row in df2.iterrows():
@@ -96,7 +109,7 @@ def get_sector_rankings():
     except Exception as e:
         log(f"  ⚠️ 概念板块获取异常: {e}")
     
-# 排除投机性概念板块
+    # 排除投机性概念板块
     EXCLUDE_SECTOR_KEYWORDS = ['连板', '打板', '涨停', '首板', '二板', '三板', '跌停', '摘帽', '复牌', '破板', '炸板']
     all_sectors = [s for s in all_sectors if not any(kw in s['name'] for kw in EXCLUDE_SECTOR_KEYWORDS)]
     
@@ -125,9 +138,9 @@ def get_sector_stocks(sector_name, sector_type):
     """获取板块成分股"""
     try:
         if sector_type == '行业':
-            df = ak.stock_board_industry_cons_em(symbol=sector_name)
+            df = retry_call(lambda: ak.stock_board_industry_cons_em(symbol=sector_name))
         else:
-            df = ak.stock_board_concept_cons_em(symbol=sector_name)
+            df = retry_call(lambda: ak.stock_board_concept_cons_em(symbol=sector_name))
         if df is not None and len(df) > 0:
             return df
     except Exception as e:
